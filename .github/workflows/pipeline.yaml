@@ -1,33 +1,17 @@
-# =============================================================================
-# pipeline.yaml — Gatekeeper CI/CD Workflow
-#
-# This workflow enforces strict conditional execution to prevent wasteful
-# GPU resource allocation on broken or unauthorized code branches.
-#
-# Execution rules for the `train` job:
-#   1. The `linter` job must pass first            (dependency gate)
-#   2. The push must be on the `main` branch       (branch protection)
-#   3. The commit message must contain [run-train] (manual intent)
-# =============================================================================
-
 name: Gatekeeper CI/CD Pipeline
 
 on:
   push:
     branches:
       - main
-      - "feature/**"        # also watch feature branches so linter runs there too
+      - "feature/**"
   pull_request:
     branches:
       - main
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # JOB 1 — LINTER (Gatekeeper: lightweight quality check)
-  # Runs on every push/PR. If this fails, the train job is completely blocked.
-  # ---------------------------------------------------------------------------
   linter:
-    name: "🔍 Linter — Code Quality Check"
+    name: "Linter — Code Quality Check"
     runs-on: ubuntu-latest
 
     steps:
@@ -46,38 +30,25 @@ jobs:
 
       - name: Run flake8 linter
         run: |
-          echo "Running flake8 on all Python files..."
-          # --max-line-length=120 matches typical ML project style guides
           flake8 . \
             --count \
             --max-line-length=120 \
             --statistics \
             --exclude=.git,__pycache__,.venv,venv \
-            || true          # treat lint warnings as non-fatal; remove '|| true' to make them fatal
-          echo "✅ Linter check complete."
+            || true
 
-  # ---------------------------------------------------------------------------
-  # JOB 2 — TRAIN (Expensive GPU job, guarded by three conditions)
-  #
-  # Condition 1 — needs: linter       → linter job must succeed
-  # Condition 2 — github.ref          → must be the main branch
-  # Condition 3 — github.event.commits[0].message  → must contain [run-train]
-  # ---------------------------------------------------------------------------
   train:
-    name: "🚀 Train — GPU Model Training"
-    runs-on: ubuntu-latest          # swap for a GPU runner in production (e.g. [self-hosted, gpu])
+    name: "Train — GPU Model Training"
+    runs-on: ubuntu-latest
 
-    # ── DEPENDENCY GATE ──────────────────────────────────────────────────────
     needs: linter
 
-    # ── CONDITIONAL EXECUTION (all three must be true) ──────────────────────
     if: |
       needs.linter.result == 'success' &&
       github.ref == 'refs/heads/main' &&
       contains(github.event.head_commit.message, '[run-train]')
 
     steps:
-      # ── Setup ──────────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -91,33 +62,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── Core training step ─────────────────────────────────────────────────
       - name: Run model training
         run: |
-          echo "🚀 Starting GPU-accelerated model training..."
           python train.py
-          echo "✅ Training complete."
 
-      # ── ON FAILURE — Upload diagnostic artifact ────────────────────────────
-      # This step ONLY runs when a previous step in this job has failed.
-      # It captures logs so engineers can debug without re-running the GPU job.
       - name: Capture error logs on failure
         if: failure()
         run: |
-          echo "❌ Training job failed. Collecting diagnostic information..." > error_logs.txt
-          echo "Timestamp : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"               >> error_logs.txt
-          echo "Runner OS : $RUNNER_OS"                                       >> error_logs.txt
-          echo "Branch    : $GITHUB_REF_NAME"                                 >> error_logs.txt
-          echo "Commit SHA: $GITHUB_SHA"                                      >> error_logs.txt
-          echo "Commit msg: ${{ github.event.head_commit.message }}"          >> error_logs.txt
-          echo ""                                                              >> error_logs.txt
-          echo "--- Python Environment ---"                                    >> error_logs.txt
-          python --version                                                     >> error_logs.txt 2>&1
-          pip list                                                             >> error_logs.txt 2>&1
-          echo ""                                                              >> error_logs.txt
-          echo "--- Disk Usage ---"                                            >> error_logs.txt
-          df -h                                                                >> error_logs.txt 2>&1
-          echo "error_logs.txt created successfully."
+          echo "Training job failed. Collecting diagnostics..." > error_logs.txt
+          echo "Timestamp : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"  >> error_logs.txt
+          echo "Runner OS : $RUNNER_OS"                         >> error_logs.txt
+          echo "Branch    : $GITHUB_REF_NAME"                   >> error_logs.txt
+          echo "Commit SHA: $GITHUB_SHA"                        >> error_logs.txt
+          python --version                                      >> error_logs.txt 2>&1
+          pip list                                              >> error_logs.txt 2>&1
 
       - name: Upload error_logs.txt as GHA Artifact
         if: failure()
@@ -125,9 +83,8 @@ jobs:
         with:
           name: error-logs-${{ github.run_id }}
           path: error_logs.txt
-          retention-days: 14         # keep for 2 weeks so engineers have time to review
+          retention-days: 14
 
-      # ── ALWAYS — Cleanup (runs regardless of success or failure) ──────────
       - name: Cleanup temporary cloud volumes
         if: always()
         run: |
